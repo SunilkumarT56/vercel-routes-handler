@@ -12,13 +12,19 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-const s3 = new AWS.S3({ region: process.env.AWS_REGION || "us-east-1" });
+AWS.config.update({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  region: process.env.AWS_REGION || "us-east-1",
+});
+
+const s3 = new AWS.S3();
 const BUCKET = process.env.AWS_S3_BUCKET || "";
 
 /**
- * 🧱 Serve main HTML page (inject <base> + fix paths)
+ * 🧱 Serve main HTML page (✅ base tag removed)
  */
-app.get("/projects/:repoId", async (req, res) => {
+app.get(["/projects/:repoId", "/projects/:repoId/index.html"], async (req, res) => {
   const { repoId } = req.params;
   const key = `main/${repoId}/index.html`;
 
@@ -26,51 +32,39 @@ app.get("/projects/:repoId", async (req, res) => {
     const file = await s3.getObject({ Bucket: BUCKET, Key: key }).promise();
 
     if (!file.Body) {
-      console.error("❌ S3 object has no Body for key:", key);
+      console.error("❌ No content found for key:", key);
       return res.status(404).send("Project not found");
     }
 
     let bodyStr = file.Body.toString();
 
-    // ⚙️ Inject <base> tag so all relative assets load from /projects/:repoId/
-    if (bodyStr.includes("<head>")) {
-      bodyStr = bodyStr.replace(
-        "<head>",
-        `<head><base href="/projects/${repoId}/">`
-      );
-    } else {
-      // fallback in case <head> missing
-      bodyStr = `<base href="/projects/${repoId}/">` + bodyStr;
-    }
-
-    // ⚙️ Fix absolute paths like src="/..." or href="/..."
-    // Changes "/assets/..." -> "assets/..."
+    // ✅ Keep your old URL replacements exactly
     bodyStr = bodyStr
-      .replace(/src="\//g, 'src="')
-      .replace(/href="\//g, 'href="');
+      .replace(/src="\//g, `src="/projects/${repoId}/`)
+      .replace(/href="\//g, `href="/projects/${repoId}/`)
+      .replace(/content="\//g, `content="/projects/${repoId}/`); // handles icons, meta images
 
     res.setHeader("Content-Type", "text/html");
-    res.setHeader("Cache-Control", "public, max-age=60"); // Optional cache
+    res.setHeader("Cache-Control", "public, max-age=60");
     res.send(bodyStr);
   } catch (err) {
-    console.error("❌ Error fetching HTML from S3:", err);
+    console.error("❌ Error fetching HTML:", err);
     res.status(404).send("Project not found");
   }
 });
 
 /**
- * ⚙️ Serve static assets (CSS, JS, images, fonts, etc.)
+ * ⚙️ Serve static assets (JS, CSS, images, etc.)
  */
-app.get("/projects/:repoId/*", async (req, res) => {
-  const { repoId } = req.params;
-  const filePath = ((req.params as any)[0] as string) || "";
+app.get(/^\/projects\/([^/]+)\/(.*)/, async (req, res) => {
+  const repoId = req.params[0];
+  const filePath = req.params[1] || "";
   const key = `main/${repoId}/${filePath}`;
 
   try {
     const file = await s3.getObject({ Bucket: BUCKET, Key: key }).promise();
 
-    // Detect content type by extension
-    const ext = path.extname(filePath).toLowerCase();
+    const ext = path.extname(filePath || "").toLowerCase();
     const contentTypes: Record<string, string> = {
       ".js": "application/javascript",
       ".css": "text/css",
@@ -88,16 +82,45 @@ app.get("/projects/:repoId/*", async (req, res) => {
     };
 
     const contentType = contentTypes[ext] || "application/octet-stream";
-
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Cache-Control", "public, max-age=86400"); // Cache 1 day
+    res.setHeader("Cache-Control", "public, max-age=86400"); // 1 day
     res.send(file.Body);
   } catch (err) {
-    console.error(`❌ Asset not found in S3 for key: ${key}`);
+    console.error(`❌ Asset not found for key: ${key}`);
     res.status(404).send("Asset not found");
   }
 });
+// ✅ Handle React client routes inside project
+app.get(/^\/projects\/([^/]+)\/.*$/, async (req, res) => {
+  const repoId = req.params[0];
+  const key = `main/${repoId}/index.html`;
 
-app.listen(PORT, () =>
-  console.log(`✅ Server running at http://localhost:${PORT}`)
-);
+  try {
+    const file = await s3.getObject({ Bucket: BUCKET, Key: key }).promise();
+
+    if (!file.Body) {
+      console.error("❌ No index.html found for SPA route:", key);
+      return res.status(404).send("Project not found");
+    }
+
+    let bodyStr = file.Body.toString();
+
+    // ✅ Keep your path replacements
+    bodyStr = bodyStr
+      .replace(/src="\//g, `src="/projects/${repoId}/`)
+      .replace(/href="\//g, `href="/projects/${repoId}/`)
+      .replace(/content="\//g, `content="/projects/${repoId}/`);
+
+    res.setHeader("Content-Type", "text/html");
+    res.send(bodyStr);
+  } catch (err) {
+    console.error("❌ SPA route fetch failed:", err);
+    res.status(404).send("Project not found");
+  }
+});
+/**
+ * 🚀 Start the server
+ */
+app.listen(PORT, () => {
+  console.log(`✅ Server running at http://localhost:${PORT}`);
+});
