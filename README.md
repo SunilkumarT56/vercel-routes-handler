@@ -144,5 +144,7 @@ mycustomdomain.com → route-handler
 - Clean multi-service architecture  
 - Production-grade reverse proxy (Nginx)
 
+architechture diagram pdf
 
+[vercelclone.pdf](https://github.com/user-attachments/files/23559241/vercelclone.pdf)
 
